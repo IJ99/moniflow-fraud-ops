@@ -17,7 +17,8 @@ st.set_page_config(
 
 def render_html(html_str: str):
     """Safely renders HTML without triggering Markdown indented code block formatting."""
-    st.markdown(textwrap.dedent(html_str).strip(), unsafe_allow_html=True)
+    cleaned_html = "\n".join([line.strip() for line in html_str.split("\n")])
+    st.markdown(cleaned_html, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
 # 2. ENTERPRISE SAAS PORTAL STYLING (MONIFLOW NAVY & BLUE THEME)
@@ -99,16 +100,6 @@ render_html(
         gap: 10px;
         flex-wrap: wrap;
     }
-    .mf-pill {
-        background: rgba(255, 255, 255, 0.09);
-        border: 1px solid rgba(147, 197, 253, 0.25);
-        color: #E0F2FE !important;
-        padding: 5px 12px;
-        border-radius: 999px;
-        font-size: 12px;
-        font-weight: 600;
-        font-family: 'JetBrains Mono', monospace;
-    }
     .mf-pill-live {
         background: rgba(16, 185, 129, 0.18);
         border: 1px solid rgba(16, 185, 129, 0.45);
@@ -133,33 +124,6 @@ render_html(
         font-size: 15px !important;
         background-color: #FFFFFF !important;
         -webkit-text-fill-color: #0E2A47 !important;
-    }
-
-    /* Style Streamlit Buttons as Quick-Select Chips */
-    div.stButton > button {
-        border-radius: 8px !important;
-        font-weight: 700 !important;
-        font-size: 12px !important;
-        border: 1.5px solid #CBD5E1 !important;
-        background-color: #FFFFFF !important;
-        color: #0E2A47 !important;
-        height: 42px !important;
-        width: 100% !important;
-        display: flex !important;
-        align-items: center !important;
-        justify-content: center !important;
-    }
-    div.stButton > button p {
-        color: #0E2A47 !important;
-        font-weight: 700 !important;
-        font-size: 12px !important;
-    }
-    div.stButton > button:hover {
-        border-color: #0077CC !important;
-        background-color: #EBF5FF !important;
-    }
-    div.stButton > button:hover p {
-        color: #0077CC !important;
     }
 
     /* Card Styling */
@@ -434,7 +398,7 @@ FEATURE_INFO = {
 KYC_LIMITS = {1: 50_000, 2: 200_000, 3: 5_000_000}
 
 # -----------------------------------------------------------------------------
-# 4. LOAD MODEL & DATASET ARTIFACTS
+# 4. LOAD MODEL & DATASET ARTIFACTS (OPTIMIZED O(1) LOOKUP & CACHED SHAP)
 # -----------------------------------------------------------------------------
 @st.cache_resource
 def load_artifacts():
@@ -443,10 +407,18 @@ def load_artifacts():
     model_path = os.path.join(base_dir, "xgb_model_behavioral.pkl")
     cols_path = os.path.join(base_dir, "final_cols_behavioral.pkl")
 
+    # 1. Load the dataset
     df = pd.read_csv(csv_path)
+    
+    # [OPTIMIZATION] Set txnId as the index for instant mathematical lookups
+    if "txnId" in df.columns:
+        df.set_index("txnId", inplace=True)
+
+    # 2. Load model and columns
     model = joblib.load(model_path)
     final_cols = joblib.load(cols_path)
 
+    # 3. Create dictionaries for fast set lookups
     valid_ips = df[df["txnIPAddress"].notna() & (df["txnIPAddress"] != "UNKNOWN")]
     known_ips = valid_ips.groupby("referralID")["txnIPAddress"].apply(set).to_dict()
 
@@ -455,11 +427,18 @@ def load_artifacts():
         known_recipients = valid_recs.groupby("referralID")["transferAccountNo"].apply(set).to_dict()
     else:
         known_recipients = {}
+        
+    # [OPTIMIZATION] Pre-build the heavy mathematical Explainer once and hold in RAM
+    try:
+        import shap
+        explainer = shap.TreeExplainer(model)
+    except Exception:
+        explainer = None
 
-    return df, model, final_cols, known_ips, known_recipients
+    return df, model, final_cols, known_ips, known_recipients, explainer
 
 try:
-    df, model, final_cols, known_ips, known_recipients = load_artifacts()
+    df, model, final_cols, known_ips, known_recipients, explainer = load_artifacts()
 except Exception as e:
     st.error(f"Error loading model or dataset artifacts: {e}")
     st.stop()
@@ -478,9 +457,6 @@ render_html(
             </div>
         </div>
         <div class="mf-nav-badges">
-            <span class="mf-pill">ROC-AUC: 96.87%</span>
-            <span class="mf-pill">PR-AUC: 0.5365</span>
-            <span class="mf-pill">{len(df):,} Txns Indexed</span>
             <span class="mf-pill-live">● ENGINE ONLINE</span>
         </div>
     </div>
@@ -488,42 +464,26 @@ render_html(
 )
 
 # -----------------------------------------------------------------------------
-# 6. TRANSACTION COMMAND BAR & QUICK DEMO PRESETS (DIRECT INLINE BLUE LABELS)
+# 6. TRANSACTION COMMAND BAR (CLEANED UP SEARCH ONLY)
 # -----------------------------------------------------------------------------
-if "selected_txn_id" not in st.session_state:
-    st.session_state.selected_txn_id = "261268"
+# 1. Set the default starting ID in memory only if it doesn't exist yet
+if "search_txn_id" not in st.session_state:
+    st.session_state.search_txn_id = "261268"
 
-ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns([2.2, 1.2, 1.2, 1.2])
+render_html('<div style="color: #0077CC !important; font-weight: 800; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; white-space: nowrap;">🔍 TRANSACTION TELEMETRY LOOKUP (TXNID)</div>')
 
-with ctrl_col2:
-    render_html('<div style="color: #0077CC !important; font-weight: 800; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; white-space: nowrap;">QUICK DEMO · SYNDICATE</div>')
-    if st.button("🔴 #261268 · magiskk26"):
-        st.session_state.selected_txn_id = "261268"
-
-with ctrl_col3:
-    render_html('<div style="color: #0077CC !important; font-weight: 800; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; white-space: nowrap;">QUICK DEMO · NEW USER</div>')
-    if st.button("🟢 #83124 · musam92"):
-        st.session_state.selected_txn_id = "83124"
-
-with ctrl_col4:
-    render_html('<div style="color: #0077CC !important; font-weight: 800; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; white-space: nowrap;">QUICK DEMO · POWER USER</div>')
-    if st.button("🟢 #263519 · joeli"):
-        st.session_state.selected_txn_id = "263519"
-
-with ctrl_col1:
-    render_html('<div style="color: #0077CC !important; font-weight: 800; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; white-space: nowrap;">🔍 TRANSACTION TELEMETRY LOOKUP (TXNID)</div>')
-    txn_input = st.text_input(
-        "Transaction ID",
-        value=st.session_state.selected_txn_id,
-        placeholder="e.g. 261268, 83124, 263519...",
-        label_visibility="collapsed",
-    )
-    st.session_state.selected_txn_id = txn_input
+# 2. Use 'key' to automatically link the input box to Streamlit's memory without fighting the browser
+txn_input = st.text_input(
+    "Transaction ID",
+    key="search_txn_id",
+    placeholder="e.g. 261268, 83124, 263519...",
+    label_visibility="collapsed",
+)
 
 render_html("<div style='height: 10px;'></div>")
 
 # -----------------------------------------------------------------------------
-# 7. LOOKUP & SCORE TRANSACTION
+# 7. LOOKUP & SCORE TRANSACTION (O(1) FAST LOOKUP)
 # -----------------------------------------------------------------------------
 if txn_input.strip():
     try:
@@ -532,12 +492,16 @@ if txn_input.strip():
         st.warning("Please enter a valid numeric Transaction ID (txnId).")
         st.stop()
 
-    matches = df[df["txnId"] == tid]
-    if matches.empty:
-        st.warning(f"No transaction found with txnId = {tid} in the {len(df):,}-row master dataset.")
+    # [OPTIMIZATION] Search instantly by index instead of scanning columns
+    if tid not in df.index:
+        st.warning(f"No transaction found with txnId = {tid} in the master dataset.")
         st.stop()
 
-    row = matches.iloc[0]
+    # Retrieve the exact row instantly
+    row = df.loc[tid]
+    if isinstance(row, pd.DataFrame): 
+        row = row.iloc[0] # Just in case duplicate IDs exist
+
     user_id = str(row.get("referralID", "UNKNOWN"))
     acct_age = int(row.get("accountAgeDays", 0))
     acct_status = int(row.get("accountStatus", 1))
@@ -698,7 +662,7 @@ if txn_input.strip():
             <div class="mf-card-footer-box" style="display:flex; justify-content:space-between; align-items:center; font-size:11px; color:#0E2A47; font-weight:600;">
                 <span>💳 Cashback Used: <b>{cb_str}</b></span>
                 <span>🎁 Earned: <b>₦{cb_earned:,.2f}</b></span>
-                <span>🏷️ Disc: <b>₦{disc:,.2f}</b></span>
+                <span>🏷️️ Disc: <b>₦{disc:,.2f}</b></span>
             </div>
         </div>
 
@@ -706,7 +670,7 @@ if txn_input.strip():
         <div class="mf-card" style="margin: 0; display: flex; flex-direction: column; justify-content: space-between; height: 100%;">
             <div>
                 <div class="mf-card-header">
-                    <p class="mf-card-title">🛡️ Real-Time Risk Verdict</p>
+                    <p class="mf-card-title">🛡 Real-Time Risk Verdict</p>
                     <span class="mf-card-badge">XGBoost · 150 Trees</span>
                 </div>
                 <div class="mf-risk-box {risk_cls}">
@@ -740,81 +704,79 @@ if txn_input.strip():
     # -------------------------------------------------------------------------
     # 9. SHAP EXPLAINABILITY ENGINE (VISUAL CARDS)
     # -------------------------------------------------------------------------
-    try:
-        import shap
-
-        explainer = shap.TreeExplainer(model)
-        sv = explainer.shap_values(X_input)
-        if isinstance(sv, list):
-            sv_row = sv[1][0]
-        elif hasattr(sv, "values"):
-            sv_row = sv.values[0]
-        else:
-            sv_row = sv[0]
-
-        shap_df = pd.DataFrame(
-            {
-                "feature": final_cols,
-                "value": X_input.iloc[0].values,
-                "shap": sv_row,
-            }
-        )
-
-        if prob >= 0.50:
-            header_note = "Top 4 Behavioral Clues Pushing This Transaction Toward FRAUD (+ Suspicion)"
-            filtered = shap_df[shap_df["shap"] > 0].sort_values("shap", ascending=False)
-            if filtered.empty:
-                filtered = shap_df.reindex(shap_df["shap"].abs().sort_values(ascending=False).index)
-        else:
-            header_note = "Top 4 Behavioral Clues Keeping This Transaction in the SAFE Zone (- Suspicion)"
-            filtered = shap_df[shap_df["shap"] < 0].sort_values("shap", ascending=True)
-            if filtered.empty:
-                filtered = shap_df.reindex(shap_df["shap"].abs().sort_values(ascending=False).index)
-
-        top4 = filtered.head(4)
-
-        cards_html = ""
-        for _, srow in top4.iterrows():
-            fname = srow["feature"]
-            fval = srow["value"]
-            fshap = srow["shap"]
-            friendly_title, desc = FEATURE_INFO.get(fname, (fname, "Behavioral risk factor."))
-
-            if fname in ["txnAmount", "txnFee", "discount", "cashback", "customerAvgAmountSoFar", "cumulativeSpend24h"]:
-                val_str = f"₦{fval:,.2f}"
-            elif fname == "deviationFromCustomerAvg":
-                val_str = f"{fval:.2f}x"
+    if explainer is not None:
+        try:
+            sv = explainer.shap_values(X_input)
+            if isinstance(sv, list):
+                sv_row = sv[1][0]
+            elif hasattr(sv, "values"):
+                sv_row = sv.values[0]
             else:
-                val_str = f"{fval:,.0f}"
+                sv_row = sv[0]
 
-            badge_cls = "mf-shap-pos" if fshap > 0 else "mf-shap-neg"
-            sign_str = f"+{fshap:.2f} Risk" if fshap > 0 else f"{fshap:.2f} Safe"
+            shap_df = pd.DataFrame(
+                {
+                    "feature": final_cols,
+                    "value": X_input.iloc[0].values,
+                    "shap": sv_row,
+                }
+            )
 
-            cards_html += f"""
-            <div class="mf-shap-card">
-                <div>
-                    <p class="mf-shap-feat">{friendly_title} <span style="font-weight:500; color:#64748B;">({fname})</span></p>
-                    <div class="mf-shap-val">Observed Value: {val_str}</div>
-                    <p class="mf-shap-desc">{desc}</p>
+            if prob >= 0.50:
+                header_note = "Top 4 Behavioral Clues Pushing This Transaction Toward FRAUD (+ Suspicion)"
+                filtered = shap_df[shap_df["shap"] > 0].sort_values("shap", ascending=False)
+                if filtered.empty:
+                    filtered = shap_df.reindex(shap_df["shap"].abs().sort_values(ascending=False).index)
+            else:
+                header_note = "Top 4 Behavioral Clues Keeping This Transaction in the SAFE Zone (- Suspicion)"
+                filtered = shap_df[shap_df["shap"] < 0].sort_values("shap", ascending=True)
+                if filtered.empty:
+                    filtered = shap_df.reindex(shap_df["shap"].abs().sort_values(ascending=False).index)
+
+            top4 = filtered.head(4)
+
+            cards_html = ""
+            for _, srow in top4.iterrows():
+                fname = srow["feature"]
+                fval = srow["value"]
+                fshap = srow["shap"]
+                friendly_title, desc = FEATURE_INFO.get(fname, (fname, "Behavioral risk factor."))
+
+                if fname in ["txnAmount", "txnFee", "discount", "cashback", "customerAvgAmountSoFar", "cumulativeSpend24h"]:
+                    val_str = f"₦{fval:,.2f}"
+                elif fname == "deviationFromCustomerAvg":
+                    val_str = f"{fval:.2f}x"
+                else:
+                    val_str = f"{fval:,.0f}"
+
+                badge_cls = "mf-shap-pos" if fshap > 0 else "mf-shap-neg"
+                sign_str = f"+{fshap:.2f} Risk" if fshap > 0 else f"{fshap:.2f} Safe"
+
+                cards_html += f"""
+                <div class="mf-shap-card">
+                    <div>
+                        <p class="mf-shap-feat">{friendly_title} <span style="font-weight:500; color:#64748B;">({fname})</span></p>
+                        <div class="mf-shap-val">Observed Value: {val_str}</div>
+                        <p class="mf-shap-desc">{desc}</p>
+                    </div>
+                    <div class="{badge_cls}">SHAP: {sign_str}</div>
                 </div>
-                <div class="{badge_cls}">SHAP: {sign_str}</div>
+                """
+
+            shap_section_html = f"""
+            <div class="mf-card">
+                <div class="mf-card-header">
+                    <p class="mf-card-title">🔍 AI Decision Explainability (SHAP Behavioral Breakdown)</p>
+                    <span class="mf-card-badge">{header_note}</span>
+                </div>
+                <div class="mf-shap-grid">
+                    {cards_html}
+                </div>
             </div>
             """
-
-        shap_section_html = f"""
-        <div class="mf-card">
-            <div class="mf-card-header">
-                <p class="mf-card-title">🔍 AI Decision Explainability (SHAP Behavioral Breakdown)</p>
-                <span class="mf-card-badge">{header_note}</span>
-            </div>
-            <div class="mf-shap-grid">
-                {cards_html}
-            </div>
-        </div>
-        """
-        render_html(shap_section_html)
-    except Exception as e:
-        st.info(f"SHAP explanation unavailable: {e}")
+            render_html(shap_section_html)
+        except Exception as e:
+            st.info(f"SHAP explanation unavailable: {e}")
 
     # -------------------------------------------------------------------------
     # 10. RAW 14-FEATURE INSPECTOR (FOR AUDIT & CSV EXPORT)
